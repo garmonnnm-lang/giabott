@@ -1,0 +1,10 @@
+# render.yaml
+services:
+  - type: web
+    name: gia-telegram-dashboard
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
