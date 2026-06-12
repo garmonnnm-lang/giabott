@@ -21,7 +21,13 @@ def get_user(user_id):
             "current_q_idx": 0,
             "errors_by_task": {i: 0 for i in range(len(tasks))},
             "total_solved": 0,
-            "total_errors": 0
+            "total_errors": 0,
+            "last_task_idx": None,
+            "session_correct": 0,
+            "session_mistakes": [],
+            "mistakes_mode": False,
+            "mistakes_queue": [],
+            "mistakes_idx": 0
         }
     return users[user_id]
 
@@ -74,15 +80,43 @@ def next_task_call(call):
     # Adaptive probability
     weights = []
     for i in range(len(tasks)):
-        w = 10 + (user['errors_by_task'][i] * 15)
-        weights.append(w)
+        if i == user.get("last_task_idx"):
+            weights.append(0)
+        else:
+            w = 1 + (user['errors_by_task'][i] * 15)
+            weights.append(w)
         
     chosen_task_idx = random.choices(range(len(tasks)), weights=weights, k=1)[0]
     
+    user["last_task_idx"] = chosen_task_idx
     user["current_task_idx"] = chosen_task_idx
     user["current_q_idx"] = 0
+    user["session_correct"] = 0
+    user["session_mistakes"] = []
+    user["mistakes_mode"] = False
     
-    send_question(call.message.chat.id, call.message.message_id, user)
+    try:
+        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+    except:
+        pass
+    
+    send_question(call.message.chat.id, None, user)
+
+@bot.callback_query_handler(func=lambda call: call.data == "work_mistakes")
+def work_mistakes_call(call):
+    uid = call.message.chat.id
+    user = get_user(uid)
+    
+    user["mistakes_mode"] = True
+    user["mistakes_queue"] = list(user["session_mistakes"])
+    user["mistakes_idx"] = 0
+    
+    try:
+        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+    except:
+        pass
+        
+    send_question(call.message.chat.id, None, user)
 
 @bot.callback_query_handler(func=lambda call: call.data == "next_question")
 def next_question_call(call):
@@ -93,27 +127,72 @@ def next_question_call(call):
         bot.answer_callback_query(call.id, "Задача не найдена, начни заново.")
         return
         
-    user["current_q_idx"] += 1
+    if user.get("mistakes_mode"):
+        user["mistakes_idx"] += 1
+    else:
+        user["current_q_idx"] += 1
     send_question(call.message.chat.id, call.message.message_id, user)
 
 def send_question(chat_id, message_id, user):
     task_idx = user["current_task_idx"]
-    q_idx = user["current_q_idx"]
     
-    task = tasks[task_idx]
-    
-    if q_idx >= len(task["questions"]):
-        user["current_task_idx"] = None
-        user["current_q_idx"] = 0
+    if user.get("mistakes_mode"):
+        if user["mistakes_idx"] >= len(user["mistakes_queue"]):
+            user["mistakes_mode"] = False
+            user["current_task_idx"] = None
+            user["current_q_idx"] = 0
+            
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🚀 Новая задача", callback_data="next_task"))
+            markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
+            msg = "🎉 Работа над ошибками завершена!"
+            if message_id:
+                bot.edit_message_text(msg, chat_id, message_id, reply_markup=markup)
+            else:
+                bot.send_message(chat_id, msg, reply_markup=markup)
+            return
+            
+        real_q_idx = user["mistakes_queue"][user["mistakes_idx"]]
+        mode_text = "[Работа над ошибками] "
+    else:
+        real_q_idx = user["current_q_idx"]
+        mode_text = ""
+        task = tasks[task_idx]
         
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🚀 Новая задача", callback_data="next_task"))
-        markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
-        
-        bot.edit_message_text("🎉 Ты завершил все 12 вопросов этой задачи!", chat_id, message_id, reply_markup=markup)
-        return
+        if real_q_idx >= len(task["questions"]):
+            total_q = len(task["questions"])
+            correct_cnt = user["session_correct"]
+            percent = int((correct_cnt / total_q) * 100) if total_q > 0 else 100
+            
+            wrong_str = ""
+            if len(user["session_mistakes"]) > 0:
+                wrong_nums = [str(x + 1) for x in user["session_mistakes"]]
+                wrong_str = f"Ошибки в вопросах: {', '.join(wrong_nums)}"
+            else:
+                user["errors_by_task"][task_idx] = 0
+                
+            msg = f"🎉 Ты завершил задачу!\n\n"
+            msg += f"✅ Результат: {correct_cnt}/{total_q} ({percent}%)\n"
+            if wrong_str:
+                msg += f"❌ {wrong_str}\n"
+                
+            markup = InlineKeyboardMarkup(row_width=1)
+            if wrong_str:
+                markup.add(InlineKeyboardButton("🛠️ Работа над ошибками", callback_data="work_mistakes"))
+            markup.add(InlineKeyboardButton("🚀 Новая задача", callback_data="next_task"))
+            markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
+            
+            user["current_task_idx"] = None
+            user["current_q_idx"] = 0
+            
+            if message_id:
+                bot.edit_message_text(msg, chat_id, message_id, reply_markup=markup)
+            else:
+                bot.send_message(chat_id, msg, reply_markup=markup)
+            return
 
-    q = task["questions"][q_idx]
+    task = tasks[task_idx]
+    q = task["questions"][real_q_idx]
     
     # Shuffle options
     options = list(q["options"])
@@ -123,14 +202,14 @@ def send_question(chat_id, message_id, user):
     markup = InlineKeyboardMarkup(row_width=2)
     labels = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
     
-    text = f"📝 **{task['category_name']}** (Вопрос {q_idx + 1}/12)\n\n"
+    text = f"📝 **{mode_text}{task['category_name']}** (Вопрос {real_q_idx + 1}/12)\n\n"
     text += f"📖 **Условие:**\n{task['condition']}\n\n"
     text += f"❓ **Вопрос:**\n{q['question']}\n\n"
     
     buttons = []
     for i, opt in enumerate(options):
         is_corr = 1 if opt == correct_val else 0
-        data = f"ans_{task_idx}_{q_idx}_{is_corr}"
+        data = f"ans_{task_idx}_{real_q_idx}_{is_corr}"
         label = labels[i] if i < len(labels) else f"{i+1}️⃣"
         text += f"{label} {opt}\n\n"
         buttons.append(InlineKeyboardButton(label, callback_data=data))
@@ -138,9 +217,12 @@ def send_question(chat_id, message_id, user):
     markup.add(*buttons)
 
     
-    try:
-        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
-    except telebot.apihelper.ApiTelegramException:     # if message is exactly the same, or we start fresh...
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+        except telebot.apihelper.ApiTelegramException:     # if message is exactly the same, or we start fresh...
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+    else:
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("ans_"))
@@ -156,8 +238,17 @@ def handle_answer(call):
     task = tasks[task_idx]
     q = task["questions"][q_idx]
     
+    if user.get("mistakes_mode"):
+        expected_q_idx = user["mistakes_queue"][user["mistakes_idx"]]
+        is_last = user["mistakes_idx"] >= len(user["mistakes_queue"]) - 1
+        mode_text = "[Работа над ошибками] "
+    else:
+        expected_q_idx = user["current_q_idx"]
+        is_last = q_idx >= len(task["questions"]) - 1
+        mode_text = ""
+        
     # Verify we are on the same question
-    if user["current_task_idx"] != task_idx or user["current_q_idx"] != q_idx:
+    if user["current_task_idx"] != task_idx or q_idx != expected_q_idx:
         bot.answer_callback_query(call.id, "Этот вопрос уже неактуален.", show_alert=True)
         return
         
@@ -165,24 +256,29 @@ def handle_answer(call):
     
     if is_corr == 1:
         user["total_solved"] += 1
-        if user["errors_by_task"][task_idx] > 0:
-            user["errors_by_task"][task_idx] -= 1
+        if not user.get("mistakes_mode"):
+            if user["errors_by_task"][task_idx] > 0:
+                user["errors_by_task"][task_idx] -= 1
+            user["session_correct"] += 1
         result_str = f"✅ **Верно!**\n\nМолодец, правильный ответ: **{correct_text}**"
     else:
         user["total_errors"] += 1
         user["errors_by_task"][task_idx] += 1
+        if not user.get("mistakes_mode"):
+            user["session_mistakes"].append(q_idx)
         result_str = f"❌ **Неверно.**\n\nПравильный ответ: **{correct_text}**"
         
-    is_last = q_idx >= len(task["questions"]) - 1
-    
     markup = InlineKeyboardMarkup()
     if is_last:
-        markup.add(InlineKeyboardButton("🏁 Завершить задачу", callback_data="next_question"))
+        if user.get("mistakes_mode"):
+             markup.add(InlineKeyboardButton("🏁 Завершить работу над ошибками", callback_data="next_question"))
+        else:
+             markup.add(InlineKeyboardButton("🏁 Завершить задачу", callback_data="next_question"))
         markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
     else:
         markup.add(InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next_question"))
         
-    text = f"📝 **{task['category_name']}** (Вопрос {q_idx + 1}/12)\n\n"
+    text = f"📝 **{mode_text}{task['category_name']}** (Вопрос {q_idx + 1}/12)\n\n"
     text += f"📖 **Условие:**\n{task['condition']}\n\n"
     text += f"❓ **Вопрос:**\n{q['question']}\n\n"
     text += "------------------------\n"
