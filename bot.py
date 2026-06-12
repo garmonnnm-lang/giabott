@@ -120,16 +120,23 @@ def send_question(chat_id, message_id, user):
     correct_val = options[q["correct_index"]]
     random.shuffle(options)
     
-    markup = InlineKeyboardMarkup()
-    for opt in options:
-        # Pass index of this option in the shuffled array, plus the index of the CORRECT option in the shuffled array
-        is_corr = 1 if opt == correct_val else 0
-        data = f"ans_{task_idx}_{q_idx}_{is_corr}"
-        markup.add(InlineKeyboardButton(opt, callback_data=data))
-
+    markup = InlineKeyboardMarkup(row_width=2)
+    labels = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
+    
     text = f"📝 **{task['category_name']}** (Вопрос {q_idx + 1}/12)\n\n"
     text += f"📖 **Условие:**\n{task['condition']}\n\n"
-    text += f"❓ **Вопрос:**\n{q['question']}"
+    text += f"❓ **Вопрос:**\n{q['question']}\n\n"
+    
+    buttons = []
+    for i, opt in enumerate(options):
+        is_corr = 1 if opt == correct_val else 0
+        data = f"ans_{task_idx}_{q_idx}_{is_corr}"
+        label = labels[i] if i < len(labels) else f"{i+1}️⃣"
+        text += f"{label} {opt}\n\n"
+        buttons.append(InlineKeyboardButton(label, callback_data=data))
+        
+    markup.add(*buttons)
+
     
     try:
         bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
@@ -158,6 +165,8 @@ def handle_answer(call):
     
     if is_corr == 1:
         user["total_solved"] += 1
+        if user["errors_by_task"][task_idx] > 0:
+            user["errors_by_task"][task_idx] -= 1
         result_str = f"✅ **Верно!**\n\nМолодец, правильный ответ: **{correct_text}**"
     else:
         user["total_errors"] += 1
