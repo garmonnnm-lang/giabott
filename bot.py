@@ -3,6 +3,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os
 import random
 import json
+from datetime import date, timedelta
 from data import tasks
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -27,15 +28,35 @@ def get_user(user_id):
             "session_mistakes": [],
             "mistakes_mode": False,
             "mistakes_queue": [],
-            "mistakes_idx": 0
+            "mistakes_idx": 0,
+            "name": "Аноним",
+            "streak": 0,
+            "last_active_date": None
         }
     return users[user_id]
+
+def update_streak(user):
+    today = date.today()
+    last_active = user.get("last_active_date")
+    
+    if last_active == today.isoformat():
+        return
+        
+    if last_active == (today - timedelta(days=1)).isoformat():
+        user["streak"] = user.get("streak", 0) + 1
+    else:
+        user["streak"] = 1
+        
+    user["last_active_date"] = today.isoformat()
 
 @bot.message_handler(commands=['start'])
 def start_msg(message):
     uid = message.chat.id
     user = get_user(uid)
-    markup = InlineKeyboardMarkup()
+    if message.from_user.first_name:
+        user["name"] = message.from_user.first_name
+
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton("🚀 Решать задачи", callback_data="next_task"))
     markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
     
@@ -49,7 +70,12 @@ def start_msg(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "start_menu")
 def start_menu_call(call):
-    markup = InlineKeyboardMarkup()
+    uid = call.message.chat.id
+    user = get_user(uid)
+    if call.message.chat.first_name:
+        user["name"] = call.message.chat.first_name
+        
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton("🚀 Решать задачи", callback_data="next_task"))
     markup.add(InlineKeyboardButton("👤 Мой профиль", callback_data="profile"))
     bot.edit_message_text("Главное меню бота:", call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -59,14 +85,21 @@ def profile_call(call):
     uid = call.message.chat.id
     user = get_user(uid)
     
-    txt = f"👤 **Твой профиль**\n\n"
+    win_rate = 0
+    total_answers = user['total_solved'] + user['total_errors']
+    if total_answers > 0:
+        win_rate = int((user['total_solved'] / total_answers) * 100)
+        
+    txt = f"👤 **Твой профиль** ({user['name']})\n\n"
+    txt += f"🔥 Огненная серия: {user.get('streak', 0)} дней\n"
+    txt += f"📈 Процент успеха (Win-Rate): {win_rate}%\n"
     txt += f"✅ Решено верно: {user['total_solved']}\n"
     txt += f"❌ Допущено ошибок: {user['total_errors']}\n\n"
     txt += "📊 Ошибки по задачам (влияют на вероятность их выпадения):\n"
     for i, t in enumerate(tasks):
         txt += f"{t['category_name']}: {user['errors_by_task'][i]} ошибок\n"
         
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton("🚀 Решать задачи", callback_data="next_task"))
     markup.add(InlineKeyboardButton("🔄 В меню", callback_data="start_menu"))
     
@@ -252,6 +285,7 @@ def handle_answer(call):
         bot.answer_callback_query(call.id, "Этот вопрос уже неактуален.", show_alert=True)
         return
         
+    update_streak(user)
     correct_text = q["options"][q["correct_index"]]
     
     if is_corr == 1:
@@ -287,5 +321,6 @@ def handle_answer(call):
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 if __name__ == "__main__":
+
     print("Starting Telegram Bot...")
     bot.infinity_polling()
